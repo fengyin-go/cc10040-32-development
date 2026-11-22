@@ -22,10 +22,14 @@ class Store:
         self._cache: dict[str, tuple[float, Any]] = {}
         # Cross-module journal
         self._query_log: list[dict[str, Any]] = []
-        # Cohort snapshots
+        # Cohort snapshots：cohort_id -> 版本号 -> 成员快照（追加留档，不再覆盖）
         self._cohort_snapshots: dict[str, list[dict[str, Any]]] = {}
+        # 每个分群当前成员快照版本号
+        self._cohort_versions: dict[str, int] = {}
         # Anomaly records
         self._anomaly_records: list[dict[str, Any]] = []
+        # 异常复核快照：按告警身份与观察窗绑定，触发留档不可变、复查材料只追加
+        self._review_snapshots: dict[str, dict[str, Any]] = {}
         # Recalc history
         self._recalc_history: list[dict[str, Any]] = []
         # Lock for thread safety
@@ -130,13 +134,95 @@ class Store:
                 count += 1
         return count
 
-    # ── Cohort operations ──
+    # ── Cohort operations（成员快照按版本追加留档） ──
 
-    def save_cohort_snapshot(self, cohort_id: int, members: list[dict[str, Any]]) -> None:
-        self._cohort_snapshots[str(cohort_id)] = members
+    def save_cohort_snapshot(self, cohort_id: int, members: list[dict[str, Any]],
+                             *, source: str = "recompute") -> dict[str, Any]:
+        """保存一份新的成员快照，版本号递增，历史版本不覆盖。
+
+        source 标明快照来源：recompute=分群重算，review=异常复查另取材料。
+        返回带版本号的快照描述符。
+        """
+        key = str(cohort_id)
+        history = self._cohort_snapshots.setdefault(key, [])
+        version = self._cohort_versions.get(key, 0) + 1
+        snapshot = {
+            "cohort_id": cohort_id,
+            "version": version,
+            "source": source,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "members": members,
+            "member_count": len(members),
+        }
+        history.append(snapshot)
+        self._cohort_versions[key] = version
+        return snapshot
 
     def get_cohort_snapshot(self, cohort_id: int) -> list[dict[str, Any]] | None:
-        return self._cohort_snapshots.get(str(cohort_id))
+        """兼容旧调用：返回最新版本的成员列表。"""
+        history = self._cohort_snapshots.get(str(cohort_id))
+        if not history:
+            return None
+        return history[-1]["members"]
+
+    def current_cohort_version(self, cohort_id: int) -> int:
+        return self._cohort_versions.get(str(cohort_id), 0)
+
+    def get_cohort_snapshot_versioned(self, cohort_id: int,
+                                      version: int) -> dict[str, Any] | None:
+        """按版本号取回某一版成员快照，找不到返回 None。"""
+        for snapshot in self._cohort_snapshots.get(str(cohort_id), []):
+            if snapshot["version"] == version:
+                return snapshot
+        return None
+
+    def get_latest_cohort_snapshot(self, cohort_id: int) -> dict[str, Any] | None:
+        history = self._cohort_snapshots.get(str(cohort_id))
+        return history[-1] if history else None
+
+    def cohort_snapshot_history(self, cohort_id: int) -> list[dict[str, Any]]:
+        """返回某分群全部成员快照版本（不含成员明细，便于列表展示）。"""
+        return [
+            {k: v for k, v in snapshot.items() if k != "members"}
+            for snapshot in self._cohort_snapshots.get(str(cohort_id), [])
+        ]
+
+    # ── 异常复核快照（按告警身份 + 观察窗绑定） ──
+
+    @staticmethod
+    def review_key(anomaly_id: int, window: str) -> str:
+        return f"anomaly_{anomaly_id}@{window}"
+
+    def save_review_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """持久化触发资料；同一告警同一观察窗只允许建立一次触发留档。"""
+        key = self.review_key(snapshot["anomaly_id"], snapshot["observation_window"])
+        if key in self._review_snapshots:
+            existing = self._review_snapshots[key]
+            if existing.get("frozen"):
+                raise ValueError(
+                    f"告警 {snapshot['anomaly_id']} 在观察窗 {snapshot['observation_window']} "
+                    "的触发留档已冻结，不得覆盖")
+        snapshot.setdefault("review_materials", [])
+        snapshot["frozen"] = True
+        self._review_snapshots[key] = snapshot
+        return snapshot
+
+    def get_review_snapshot(self, anomaly_id: int, window: str) -> dict[str, Any] | None:
+        return self._review_snapshots.get(self.review_key(anomaly_id, window))
+
+    def list_review_snapshots(self) -> list[dict[str, Any]]:
+        return list(self._review_snapshots.values())
+
+    def append_review_material(self, anomaly_id: int, window: str,
+                               material: dict[str, Any]) -> dict[str, Any] | None:
+        """向既有复核快照追加复查材料；触发留档保持不变。"""
+        snapshot = self.get_review_snapshot(anomaly_id, window)
+        if snapshot is None:
+            return None
+        material["seq"] = len(snapshot["review_materials"]) + 1
+        material["appended_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        snapshot["review_materials"].append(material)
+        return snapshot
 
     # ── Anomaly detection operations ──
 

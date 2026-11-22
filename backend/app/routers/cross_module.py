@@ -239,6 +239,76 @@ def detection_coverage():
     return svc.get_detection_coverage()
 
 
+# ── 异常复核快照：签收留档、复查追加、回看复算 ──
+
+@router.post("/anomaly/{anomaly_id}/acknowledge")
+def acknowledge_anomaly(anomaly_id: int, operator: str = "值班员",
+                        window: str | None = None):
+    """签收告警并建立异常复核快照（绑定两组名单及成员快照版本）。"""
+    svc = AnomalyDetectorService()
+    return svc.acknowledge_anomaly(anomaly_id, operator=operator, window=window)
+
+
+@router.post("/anomaly/{anomaly_id}/review-material")
+def append_review_material(anomaly_id: int, cohort_name: str,
+                           window: str | None = None, operator: str = "值班员",
+                           note: str = ""):
+    """复查时另取材料：归档新成员快照并追加到复核快照，不覆盖触发记录。"""
+    svc = AnomalyDetectorService()
+    return svc.append_review_material(
+        anomaly_id, window or _current_window(),
+        cohort_name=cohort_name, operator=operator, note=note)
+
+
+@router.get("/anomaly/{anomaly_id}/review-snapshot")
+def open_review_snapshot(anomaly_id: int, window: str | None = None):
+    """打开异常复核快照，依据触发时两份样本复算当班差值。"""
+    svc = AnomalyDetectorService()
+    return svc.open_review_snapshot(anomaly_id, window)
+
+
+@router.get("/anomaly/{anomaly_id}/monday-check")
+def monday_check(anomaly_id: int, window: str | None = None):
+    """按周一采样数据核对复查结论。"""
+    svc = AnomalyDetectorService()
+    return svc.verify_with_monday_sample(anomaly_id, window)
+
+
+@router.get("/anomaly/review-snapshots")
+def list_review_snapshots():
+    """列出全部异常复核快照。"""
+    svc = AnomalyDetectorService()
+    return {"items": svc.list_review_snapshots()}
+
+
+@router.post("/segment-compare/{task_id}/anomaly-review/{anomaly_id}")
+def segment_open_review(task_id: int, anomaly_id: int, window: str | None = None):
+    """分群对比分析打开异常复核快照并复算当班差值。"""
+    svc = SegmentCompareService()
+    return svc.open_anomaly_review(anomaly_id, window)
+
+
+@router.post("/segment-compare/{task_id}/anomaly-review/{anomaly_id}/monday-check")
+def segment_monday_check(task_id: int, anomaly_id: int, window: str | None = None):
+    """分群对比分析按周一采样核对复查结论。"""
+    svc = SegmentCompareService()
+    return svc.verify_review_by_monday(anomaly_id, window)
+
+
+@router.post("/experiment-group/new-round")
+def experiment_new_round(cohort_a: str, cohort_b: str,
+                         trigger_snapshot_id: str = "", operator: str = "值班员"):
+    """签收联动：实验分群完成新一轮计算。"""
+    svc = ExperimentGroupService()
+    return svc.run_new_round(cohort_a, cohort_b,
+                             trigger_snapshot_id=trigger_snapshot_id, operator=operator)
+
+
+def _current_window() -> str:
+    from app.services.anomaly_samples import current_observation_window
+    return current_observation_window()
+
+
 # ── 重算引擎 ──
 
 @router.post("/recalc/{task_id}/start")

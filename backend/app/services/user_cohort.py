@@ -22,11 +22,14 @@ class UserCohortService(BaseModuleService):
     ACTION_RULES = {"重新计算": "已生成", "标记失效": "已失效"}
     NEGATIVE_ACTIONS = []
 
-    def recompute_cohort(self, entry_id: int) -> dict[str, Any] | None:
-        """重新计算分群，生成最新的用户列表快照。
+    def recompute_cohort(self, entry_id: int, *, source: str = "recompute",
+                         operator: str = "系统") -> dict[str, Any] | None:
+        """重新计算分群，生成最新的用户列表快照（按版本追加留档）。
 
         跨模块数据流: user_cohort -> experiment_group（实验分群引用）
                      user_cohort -> segment_compare（对比分析引用）
+
+        source: recompute=常规重算，review=异常复查时另取复查材料。
         """
         cohort = store.find(self.MODULE, entry_id)
         if cohort is None:
@@ -53,8 +56,8 @@ class UserCohortService(BaseModuleService):
         cohort["status"] = "已生成"
         cohort["pending"] = False
 
-        # 保存快照
-        store.save_cohort_snapshot(entry_id, members)
+        # 保存版本化快照（历史版本不覆盖）
+        snapshot = store.save_cohort_snapshot(entry_id, members, source=source)
 
         # 检查是否有引用的实验分组需要更新
         experiment_refs = store.find_by_field("experiment_group", "筛选条件", cohort_name)
@@ -65,6 +68,9 @@ class UserCohortService(BaseModuleService):
             "cohort_name": cohort_name,
             "condition": condition,
             "member_count": len(members),
+            "snapshot_version": snapshot["version"],
+            "snapshot_source": snapshot["source"],
+            "operator": operator,
             "updated_at": cohort.get("最近更新时间"),
             "affected_experiments": affected_experiments,
             "sample_members": members[:5],

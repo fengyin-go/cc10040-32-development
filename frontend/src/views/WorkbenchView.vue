@@ -90,6 +90,15 @@
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <AnomalyReviewPanel
+      v-if="meta.key === 'anomaly_detector'"
+      context="anomaly_detector"
+    />
+    <AnomalyReviewPanel
+      v-else-if="meta.key === 'segment_compare'"
+      context="segment_compare"
+    />
   </section>
 </template>
 
@@ -103,6 +112,7 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
+import AnomalyReviewPanel from '@/views/AnomalyReviewPanel.vue'
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
